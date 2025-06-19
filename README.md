@@ -87,6 +87,11 @@ Inside the chat, you can type your questions. Use `exit` or `quit` to end the se
     python3 scripts/query_chroma.py --model deepseek-coder
     ```
 
+---
+---
+---
+
+# 🐳 RAG Notion Tutorial (DeepSeek)
 
 Let's build your project using **NotionPageReader + LlamaIndex + BAAI (Hugging Face) embeddings + Chroma + DeepSeek**.
 
