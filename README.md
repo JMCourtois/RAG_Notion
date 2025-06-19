@@ -58,3 +58,31 @@ You can modify the script's behavior with 자랑:
     ```bash
     python3 scripts/notion_to_chroma.py --persist-dir ./custom_db
     ```
+
+## 3. Querying the Database
+
+Once your data is indexed, you can start an interactive chat session to ask questions using the `scripts/query_chroma.py` script.
+
+### Basic Command
+
+Run this command to start the chat. It will load your database and connect to the DeepSeek API.
+
+```bash
+python3 scripts/query_chroma.py
+```
+
+Inside the chat, you can type your questions. Use `exit` or `quit` to end the session.
+
+### Available Flags
+
+-   `--top-k <number>`  
+    Change the number of documents retrieved from the database to build the answer.
+    ```bash
+    python3 scripts/query_chroma.py --top-k 5
+    ```
+
+-   `--model <model_name>`  
+    Use a different DeepSeek model.
+    ```bash
+    python3 scripts/query_chroma.py --model deepseek-coder
+    ```
