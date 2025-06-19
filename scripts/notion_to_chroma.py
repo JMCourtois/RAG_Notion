@@ -69,27 +69,33 @@ def should_reindex(doc, history):
         return True
     return (page_id not in history) or (history[page_id] != last_edit)
 
-def discover_child_pages(page_id, discovered_pages=None):
-    if discovered_pages is None:
-        discovered_pages = set()
-    if page_id in discovered_pages:
-        return discovered_pages
-    discovered_pages.add(page_id)
+def _discover_child_pages_recursive(block_id: str, discovered_pages: set):
+    """
+    Recursively finds all child pages starting from a given block ID.
+    Adds found page IDs to the provided `discovered_pages` set.
+    This function explores any block, but only adds IDs of type 'child_page'.
+    """
     try:
-        response = notion.blocks.children.list(block_id=page_id)
-        blocks = response.get("results", [])
-        for block in blocks:
-            block_type = block.get("type")
-            if block_type == "child_page":
-                child_page_id = block.get("id")
-                if child_page_id and child_page_id not in discovered_pages:
-                    discover_child_pages(child_page_id, discovered_pages)
-            elif block_type == "child_database":
-                # Optional: handle child_database if needed
-                pass
+        next_cursor = None
+        while True:
+            response = notion.blocks.children.list(block_id=block_id, start_cursor=next_cursor, page_size=100)
+            blocks = response.get("results", [])
+            for block in blocks:
+                # If it's a child page, add it and recurse into it.
+                if block.get("type") == "child_page":
+                    child_page_id = block.get("id")
+                    if child_page_id not in discovered_pages:
+                        discovered_pages.add(child_page_id)
+                        _discover_child_pages_recursive(child_page_id, discovered_pages)
+                # If it's any other block that has children, just recurse into it.
+                elif block.get("has_children"):
+                    _discover_child_pages_recursive(block.get("id"), discovered_pages)
+            
+            next_cursor = response.get("next_cursor")
+            if not next_cursor:
+                break
     except Exception as e:
-        print(f"⚠️ Error discovering children of page {page_id}: {e}")
-    return discovered_pages
+        print(f"⚠️ Error exploring children of block {block_id}: {e}")
 
 def enrich_document_metadata(doc, notion_client):
     pid = doc.metadata.get("page_id")
@@ -151,7 +157,8 @@ def main():
 
     # 1) Discover all pages and subpages
     print("🔍 Discovering pages and subpages...")
-    all_page_ids = discover_child_pages(NOTION_PAGE_ID)
+    all_page_ids = {NOTION_PAGE_ID}
+    _discover_child_pages_recursive(NOTION_PAGE_ID, all_page_ids)
     print(f"📄 Found {len(all_page_ids)} pages (including subpages)")
 
     # 2) Read Notion documents
