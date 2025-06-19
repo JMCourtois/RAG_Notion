@@ -9,6 +9,7 @@ import argparse
 import shutil
 from dotenv import load_dotenv
 from notion_client import Client as NotionClient
+import chromadb
 
 # Load environment variables
 load_dotenv()
@@ -25,6 +26,7 @@ parser.add_argument("--persist-dir", default=DEFAULT_PERSIST_DIR, help="ChromaDB
 parser.add_argument("--history-path", default=DEFAULT_HISTORY_PATH, help="Indexing history JSON path.")
 parser.add_argument("--force-reindex", action="store_true", help="Force reindexing even if no changes detected.")
 parser.add_argument("--reset-chroma", action="store_true", help="Delete existing ChromaDB database and history before running.")
+parser.add_argument("--sync", action="store_true", help="Force a sync and print debug info about deleted pages.")
 args = parser.parse_args()
 
 NOTION_TOKEN = args.notion_token
@@ -97,6 +99,53 @@ def _discover_child_pages_recursive(block_id: str, discovered_pages: set):
     except Exception as e:
         print(f"⚠️ Error exploring children of block {block_id}: {e}")
 
+def sync_deleted_pages(chroma_collection, history: dict, notion_page_ids: set):
+    """
+    Removes documents from ChromaDB and history if their source page no longer exists in Notion.
+    This function performs a full audit of the database.
+    """
+    print("🔄 Syncing deleted pages...")
+    
+    # 1. Get ALL documents from ChromaDB to perform a full audit.
+    try:
+        all_chroma_docs = chroma_collection.get(include=["metadatas"])
+        all_doc_ids = all_chroma_docs.get('ids', [])
+        all_metadatas = all_chroma_docs.get('metadatas', [])
+    except Exception as e:
+        print(f"⚠️ Could not get documents from ChromaDB to sync deletes: {e}")
+        return
+
+    # 2. Identify document chunks whose page_id is no longer in Notion
+    doc_ids_to_delete = []
+    chroma_page_ids = set() # For history cleanup
+    for i, meta in enumerate(all_metadatas):
+        doc_page_id = meta.get('page_id')
+        if doc_page_id:
+            chroma_page_ids.add(doc_page_id)
+            if doc_page_id not in notion_page_ids:
+                doc_ids_to_delete.append(all_doc_ids[i])
+
+    # 3. Delete the orphaned chunks from ChromaDB
+    if doc_ids_to_delete:
+        print(f"🗑️ Found {len(doc_ids_to_delete)} orphaned document chunks to delete...")
+        try:
+            chroma_collection.delete(ids=doc_ids_to_delete)
+            print("✅ Successfully deleted orphaned chunks from ChromaDB.")
+        except Exception as e:
+            print(f"❌ Error deleting chunks from ChromaDB: {e}")
+    else:
+        print("✅ No orphaned document chunks found in ChromaDB.")
+
+    # 4. Clean up the history file based on what's no longer in Notion
+    history_page_ids_to_delete = set(history.keys()) - notion_page_ids
+    if history_page_ids_to_delete:
+        print(f"🗑️ Found {len(history_page_ids_to_delete)} page(s) to remove from history...")
+        for page_id in history_page_ids_to_delete:
+            del history[page_id]
+        print("✅ Successfully removed pages from history.")
+    else:
+        print("✅ History file is already up to date.")
+
 def enrich_document_metadata(doc, notion_client):
     pid = doc.metadata.get("page_id")
     if pid is None:
@@ -161,13 +210,20 @@ def main():
     _discover_child_pages_recursive(NOTION_PAGE_ID, all_page_ids)
     print(f"📄 Found {len(all_page_ids)} pages (including subpages)")
 
-    # 2) Read Notion documents
+    # Connect to ChromaDB and load history before syncing
+    chroma_client = chromadb.PersistentClient(path=PERSIST_DIR)
+    chroma_collection = chroma_client.get_or_create_collection("notion_collection")
+
+    # 2) Sync and remove deleted pages before doing anything else
+    sync_deleted_pages(chroma_collection, history, all_page_ids)
+    
+    # 3) Read Notion documents for the remaining pages
     reader = NotionPageReader(integration_token=NOTION_TOKEN)
     print("📖 Reading Notion pages...")
     docs = reader.load_data(page_ids=list(all_page_ids))
     print(f"✅ Loaded {len(docs)} Notion documents.")
 
-    # 3) Enrich metadata
+    # 4) Enrich metadata
     enriched_docs = [enrich_document_metadata(doc, notion) for doc in docs]
     print(f"✅ Enriched metadata for {len(enriched_docs)} documents.")
 
@@ -190,7 +246,7 @@ def main():
     if is_db_empty:
         print("⚠️ ChromaDB is empty. Forcing a re-index of all documents.")
 
-    # 4) Filter docs to index
+    # 7) Filter docs to index
     if FORCE_REINDEX or is_db_empty:
         docs_to_index = enriched_docs
         if FORCE_REINDEX:
@@ -201,11 +257,21 @@ def main():
         docs_to_index = [doc for doc in enriched_docs if should_reindex(doc, history)]
         print(f"🆕 Documents to index based on last edit time: {len(docs_to_index)}")
 
-    # We need the vector_store and storage_context after filtering
+    # 8) Cleanly update the index by first deleting old chunks
+    if not is_db_empty and docs_to_index:
+        page_ids_to_update = {doc.metadata['page_id'] for doc in docs_to_index}
+        print(f"🔄 Preparing to update {len(page_ids_to_update)} page(s) by deleting their old chunks first...")
+        delete_filter = {"page_id": {"$in": list(page_ids_to_update)}}
+        try:
+            chroma_collection.delete(where=delete_filter)
+            print("✅ Successfully deleted old chunks for pages to be updated.")
+        except Exception as e:
+            print(f"❌ Error deleting old chunks during update: {e}")
+
+    # 9) Index or ensure the index
     vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
     storage_context = StorageContext.from_defaults(vector_store=vector_store)
 
-    # 7) Index or ensure the index
     print("📚 Creating/updating index in ChromaDB...")
     if docs_to_index:
         index = VectorStoreIndex.from_documents(
@@ -221,11 +287,11 @@ def main():
         )
         print("✅ Existing documents available in the index.")
 
-    # 8) Persist changes
+    # 10) Persist changes
     index.storage_context.persist()
     print("✅ Index saved to ChromaDB.")
 
-    # 9) Update history
+    # 11) Update history
     for doc in docs_to_index:
         pid = doc.metadata.get("page_id")
         last_edit = doc.metadata.get("last_edited_time")
@@ -237,7 +303,7 @@ def main():
     else:
         print("📝 No new pages to update in history.")
 
-    # 10) Check documents in ChromaDB
+    # 12) Check documents in ChromaDB
     count = chroma_collection.count()
     print(f"📊 Total documents in ChromaDB: {count}")
 

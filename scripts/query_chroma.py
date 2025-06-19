@@ -27,6 +27,10 @@ load_dotenv()
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 CHROMA_PERSIST_DIR = os.getenv("CHROMA_PERSIST_DIR", "./chroma_storage")
 EMBED_MODEL_NAME = os.getenv("EMBED_MODEL", "BAAI/bge-large-en")
+SYSTEM_PROMPT = os.getenv(
+    "SYSTEM_PROMPT",
+    "You are a helpful AI assistant. Answer the user's questions based on the provided context."
+)
 
 
 class DeepseekOpenAI(BaseLlamaOpenAI):
@@ -92,6 +96,7 @@ def main():
     print(f"🚀 Starting RAG chat with model: {args.model}")
     print(f"💾 Using ChromaDB from: {args.persist_dir}")
     print(f"🔍 Retrieving top {args.top_k} documents for context.")
+    print(f"🤖 System Prompt: '{SYSTEM_PROMPT[:80]}...'") # Print first 80 chars of the prompt
 
     # 1. Initialize LLM
     llm = DeepseekOpenAI(
@@ -120,13 +125,14 @@ def main():
         embed_model=embed_model,
     )
 
-    # 5. Create chat engine with memory
+    # 5. Create chat engine with memory and system prompt
     memory = ChatMemoryBuffer.from_defaults(token_limit=4000)
     
     chat_engine = index.as_chat_engine(
         llm=llm,
         similarity_top_k=args.top_k,
         memory=memory,
+        system_prompt=SYSTEM_PROMPT,
         streaming=True,
         verbose=False,
     )
