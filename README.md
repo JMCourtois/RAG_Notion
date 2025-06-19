@@ -81,11 +81,19 @@ Inside the chat, you can type your questions. Use `exit` or `quit` to end the se
     python3 scripts/query_chroma.py --top-k 5
     ```
 
+-   `--reasoner`  
+    Use the more powerful (but slower) `deepseek-reasoner` model instead of the default `deepseek-chat`.
+    ```bash
+    python3 scripts/query_chroma.py --reasoner
+    ```
+
 -   `--model <model_name>`  
     Use a different DeepSeek model.
     ```bash
     python3 scripts/query_chroma.py --model deepseek-coder
     ```
+
+### Customizing the AI's Personality
 
 ---
 ---
