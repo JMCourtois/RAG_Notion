@@ -19,6 +19,8 @@ ENV/
 # Database and data directories
 chroma_db/
 data/
+chroma_storage/
+storage/
 
 # Distribution / packaging
 .Python

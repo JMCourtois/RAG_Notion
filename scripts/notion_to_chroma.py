@@ -6,6 +6,7 @@ Configurable via .env variables and/or command-line arguments.
 import os
 import json
 import argparse
+import shutil
 from dotenv import load_dotenv
 from notion_client import Client as NotionClient
 
@@ -13,8 +14,8 @@ from notion_client import Client as NotionClient
 load_dotenv()
 DEFAULT_NOTION_TOKEN = os.getenv("NOTION_INTEGRATION_TOKEN")
 DEFAULT_NOTION_PAGE_ID = os.getenv("NOTION_PAGE_ID")
-DEFAULT_PERSIST_DIR = os.getenv("CHROMA_PERSIST_DIR", "../chroma_db")
-DEFAULT_HISTORY_PATH = os.getenv("CHROMA_HISTORY_PATH", "../data/indexed_pages.json")
+DEFAULT_PERSIST_DIR = os.getenv("CHROMA_PERSIST_DIR", "./chroma_db")
+DEFAULT_HISTORY_PATH = os.getenv("CHROMA_HISTORY_PATH", "./data/indexed_pages.json")
 
 # Command-line arguments
 parser = argparse.ArgumentParser(description="Ingest Notion into ChromaDB for RAG.")
@@ -23,6 +24,7 @@ parser.add_argument("--notion-page-id", default=DEFAULT_NOTION_PAGE_ID, help="Ro
 parser.add_argument("--persist-dir", default=DEFAULT_PERSIST_DIR, help="ChromaDB persistence directory.")
 parser.add_argument("--history-path", default=DEFAULT_HISTORY_PATH, help="Indexing history JSON path.")
 parser.add_argument("--force-reindex", action="store_true", help="Force reindexing even if no changes detected.")
+parser.add_argument("--reset-chroma", action="store_true", help="Delete existing ChromaDB database and history before running.")
 args = parser.parse_args()
 
 NOTION_TOKEN = args.notion_token
@@ -116,6 +118,29 @@ def enrich_document_metadata(doc, notion_client):
     return doc
 
 def main():
+    if args.reset_chroma:
+        print("🔥 --reset-chroma flag detected. Deleting database and history.")
+        if os.path.exists(PERSIST_DIR):
+            try:
+                shutil.rmtree(PERSIST_DIR)
+                print(f"✅ Deleted ChromaDB directory: {PERSIST_DIR}")
+            except OSError as e:
+                print(f"❌ Error deleting directory {PERSIST_DIR}: {e}")
+        else:
+            print(f"🤷 Directory {PERSIST_DIR} not found, nothing to delete.")
+        
+        history_dir = os.path.dirname(HISTORY_PATH)
+        if os.path.exists(history_dir):
+            try:
+                shutil.rmtree(history_dir)
+                print(f"✅ Deleted history directory: {history_dir}")
+            except OSError as e:
+                print(f"❌ Error deleting directory {history_dir}: {e}")
+        else:
+            print(f"🤷 Directory {history_dir} not found, nothing to delete.")
+
+        print("✅ Reset complete. Proceeding with fresh indexing...")
+
     print(f"🔗 Notion page ID: {NOTION_PAGE_ID}")
     print(f"💾 ChromaDB dir: {PERSIST_DIR}")
     print(f"📝 History: {HISTORY_PATH}")
@@ -139,14 +164,6 @@ def main():
     enriched_docs = [enrich_document_metadata(doc, notion) for doc in docs]
     print(f"✅ Enriched metadata for {len(enriched_docs)} documents.")
 
-    # 4) Filter docs to index
-    if FORCE_REINDEX:
-        docs_to_index = enriched_docs
-        print(f"🔄 Reindexing {len(docs_to_index)} documents (forced)")
-    else:
-        docs_to_index = [doc for doc in enriched_docs if should_reindex(doc, history)]
-        print(f"🆕 Documents to index: {len(docs_to_index)}")
-
     # 5) Embedding model
     print("🔄 Loading embedding model BAAI/bge-large-en...")
     embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-large-en")
@@ -160,6 +177,24 @@ def main():
         database=DEFAULT_DATABASE,
     )
     chroma_collection = chroma_client.get_or_create_collection("notion_collection")
+    
+    # Check if the database is empty, which should trigger a re-index.
+    is_db_empty = chroma_collection.count() == 0
+    if is_db_empty:
+        print("⚠️ ChromaDB is empty. Forcing a re-index of all documents.")
+
+    # 4) Filter docs to index
+    if FORCE_REINDEX or is_db_empty:
+        docs_to_index = enriched_docs
+        if FORCE_REINDEX:
+            print(f"🔄 Reindexing {len(docs_to_index)} documents (forced by flag)")
+        else:
+            print(f"🔄 Reindexing {len(docs_to_index)} documents (database was empty)")
+    else:
+        docs_to_index = [doc for doc in enriched_docs if should_reindex(doc, history)]
+        print(f"🆕 Documents to index based on last edit time: {len(docs_to_index)}")
+
+    # We need the vector_store and storage_context after filtering
     vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
     storage_context = StorageContext.from_defaults(vector_store=vector_store)
 
