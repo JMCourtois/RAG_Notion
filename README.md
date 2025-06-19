@@ -33,7 +33,7 @@ python3 scripts/notion_to_chroma.py
 
 ### Available Flags
 
-You can modify the script's behavior with 자랑:
+You can modify the script's behavior with these flags:
 
 -   `--force-reindex`  
     Forces the script to re-index all Notion pages, ignoring the history log.
@@ -50,7 +50,7 @@ You can modify the script's behavior with 자랑:
 -   `--notion-page-id YOUR_PAGE_ID`  
     Temporarily use a different root Notion page without changing the `.env` file.
     ```bash
-    python3 scripts/notion_to_chroma.py --notion-page-id <ID_DE_PAGINA>
+    python3 scripts/notion_to_chroma.py --notion-page-id <PAGE_ID>
     ```
 
 -   `--persist-dir path/to/db`  
