@@ -93,6 +93,18 @@ Inside the chat, you can type your questions. Use `exit` or `quit` to end the se
     python3 scripts/query_chroma.py --model deepseek-coder
     ```
 
+-   `--sources`  
+    Displays a compressed, two-line view of the source documents used for the query.
+    ```bash
+    python3 scripts/query_chroma.py --sources
+    ```
+
+-   `--sources-debug`  
+    Displays the full, detailed metadata for each source document for debugging purposes.
+    ```bash
+    python3 scripts/query_chroma.py --sources-debug
+    ```
+
 ### Customizing the AI's Personality
 
 ---
