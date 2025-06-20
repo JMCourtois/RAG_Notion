@@ -7,6 +7,8 @@ and uses the DeepSeek API to generate responses in an interactive chat session.
 """
 
 import os
+# Suppress the tokenizer parallelism warning
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 import argparse
 import time
 from dotenv import load_dotenv
@@ -82,12 +84,37 @@ def print_streaming_response(response_gen):
     return full_response
 
 
+def print_source_nodes(source_nodes):
+    """Prints the source nodes and their metadata."""
+    if not source_nodes:
+        print("\n[No source documents found for this query.]\n")
+        return
+
+    print("\n--- Source Documents ---")
+    for i, source_node in enumerate(source_nodes):
+        print(f"📄 Source {i+1} (Score: {source_node.score:.4f})")
+        if source_node.node.metadata:
+            print("   Metadata:")
+            for key, value in source_node.node.metadata.items():
+                print(f"     - {key}: {value}")
+        
+        content = source_node.node.get_content().strip().replace('\n', ' ')
+        print(f"   Snippet: '{content[:150]}...'")
+        print("-" * 25)
+    print("------------------------\n")
+
+
 def main():
     """Main function to run the interactive RAG chat."""
     parser = argparse.ArgumentParser(description="Interactive RAG chat with DeepSeek.")
-    parser.add_argument("--top-k", type=int, default=3, help="Number of top similar documents to retrieve.")
+    parser.add_argument("--top-k", type=int, default=9, help="Number of top similar documents to retrieve.")
     parser.add_argument("--model", default="deepseek-chat", help="DeepSeek model to use (e.g., deepseek-chat, deepseek-coder).")
     parser.add_argument("--persist-dir", default=CHROMA_PERSIST_DIR, help="Directory for ChromaDB persistence.")
+    parser.add_argument(
+        "--show-sources",
+        action="store_true",
+        help="Show source documents and metadata for the query.",
+    )
     args = parser.parse_args()
 
     if not DEEPSEEK_API_KEY:
@@ -129,6 +156,7 @@ def main():
     memory = ChatMemoryBuffer.from_defaults(token_limit=4000)
     
     chat_engine = index.as_chat_engine(
+        chat_mode="context",  # type: ignore
         llm=llm,
         similarity_top_k=args.top_k,
         memory=memory,
@@ -150,6 +178,13 @@ def main():
                     print("👋 Goodbye!")
                     break
                 
+                if args.show_sources:
+                    # To show sources first, we query non-streamed to get nodes, then stream for chat.
+                    # This is slightly less efficient as it retrieves twice, but ensures correct order.
+                    query_engine = index.as_query_engine(llm=llm, similarity_top_k=args.top_k)
+                    response_for_sources = query_engine.query(user_input)
+                    print_source_nodes(response_for_sources.source_nodes)
+
                 response_stream = chat_engine.stream_chat(user_input)
                 print_streaming_response(response_stream)
 
