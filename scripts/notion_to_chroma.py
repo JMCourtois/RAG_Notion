@@ -25,7 +25,8 @@ from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from chromadb import PersistentClient
 from chromadb.config import Settings as ChromaSettings, DEFAULT_TENANT, DEFAULT_DATABASE
 from llama_index.vector_stores.chroma import ChromaVectorStore
-from llama_index.core import VectorStoreIndex, StorageContext
+from llama_index.core import VectorStoreIndex, StorageContext, Settings
+from llama_index.core.node_parser import SentenceSplitter
 
 # Load environment variables
 load_dotenv()
@@ -59,13 +60,6 @@ if NOTION_PAGE_ID is None:
 notion = NotionClient(auth=NOTION_TOKEN)
 console = Console() # Rich console for better UI
 
-from llama_index.readers.notion import NotionPageReader
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
-from chromadb import PersistentClient
-from chromadb.config import Settings as ChromaSettings, DEFAULT_TENANT, DEFAULT_DATABASE
-from llama_index.vector_stores.chroma import ChromaVectorStore
-from llama_index.core import VectorStoreIndex, StorageContext
-
 def load_history(history_path):
     try:
         with open(history_path, "r", encoding="utf-8") as f:
@@ -90,9 +84,7 @@ def should_reindex(doc, history):
 
 def _discover_child_pages_recursive(block_id: str, discovered_pages: set):
     """
-    Recursively finds all child pages starting from a given block ID.
-    Adds found page IDs to the provided `discovered_pages` set.
-    This function explores any block, but only adds IDs of type 'child_page'.
+    Recursively finds all child page IDs, providing real-time feedback with titles.
     """
     try:
         next_cursor = None
@@ -100,13 +92,20 @@ def _discover_child_pages_recursive(block_id: str, discovered_pages: set):
             response = notion.blocks.children.list(block_id=block_id, start_cursor=next_cursor, page_size=100)
             blocks = response.get("results", []) # type: ignore
             for block in blocks:
-                # If it's a child page, add it and recurse into it.
                 if block.get("type") == "child_page":
                     child_page_id = block.get("id")
                     if child_page_id not in discovered_pages:
                         discovered_pages.add(child_page_id)
+                        try:
+                            # Retrieve page details for real-time feedback
+                            page_info = notion.pages.retrieve(page_id=child_page_id)
+                            title_list = page_info.get("properties", {}).get("title", {}).get("title", []) # type: ignore
+                            title = title_list[0].get("plain_text") if title_list else "Untitled"
+                            console.print(f"  [dim] -> Discovered page:[/dim] [cyan]{title}[/cyan]")
+                        except Exception:
+                            console.print(f"  [dim] -> Discovered page ID:[/dim] [cyan]{child_page_id}[/cyan]")
+                        
                         _discover_child_pages_recursive(child_page_id, discovered_pages)
-                # If it's any other block that has children, just recurse into it.
                 elif block.get("has_children"):
                     _discover_child_pages_recursive(block.get("id"), discovered_pages)
             
@@ -244,19 +243,39 @@ def main():
     console.print(f"✅ Loaded {len(docs)} Notion documents.")
 
     # 4) Enrich metadata with a progress bar
-    console.print("🧠 [bold]Enriching documents with metadata...[/bold]")
+    console.print("🧠 [bold]Processing and enriching documents...[/bold]")
     enriched_docs = []
-    with Progress(SpinnerColumn(), BarColumn(), "[progress.percentage]{task.percentage:>3.0f}%", TextColumn("{task.description}")) as progress:
-        task = progress.add_task("[cyan]Enriching...", total=len(docs))
+    with Progress(
+        SpinnerColumn(), 
+        BarColumn(), 
+        "[progress.percentage]{task.percentage:>3.0f}%", 
+        TextColumn("[cyan]{task.description}[/cyan] [bold]({task.completed} of {task.total})[/bold]"),
+        transient=True
+    ) as progress:
+        task = progress.add_task("[green]Processing pages...", total=len(docs))
         for doc in docs:
-            enriched_docs.append(enrich_document_metadata(doc, notion))
-            progress.update(task, advance=1)
+            enriched_doc = enrich_document_metadata(doc, notion)
+            title = enriched_doc.metadata.get("title", f"Page ID: {enriched_doc.metadata.get('page_id', 'N/A')}")
+            progress.update(task, advance=1, description=f"Processing '{title}'")
+            enriched_docs.append(enriched_doc)
     
-    console.print(f"✅ Enriched metadata for {len(enriched_docs)} documents.")
+    console.print(f"✅ Processed and enriched {len(enriched_docs)} documents.")
 
-    # 5) Embedding model
-    console.print("🔄 [bold]Loading embedding model BAAI/bge-large-en...[/bold]")
-    embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-large-en")
+    # 5) Configure LlamaIndex Settings (Chunking and Embedding)
+    console.print("⚙️ [bold]Configuring LlamaIndex Settings...[/bold]")
+    
+    # Using the default values so they are visible and can be easily changed.
+    # Standard chunk size, good for general context.
+    chunk_size = 1024 
+    # Overlap to avoid losing context between chunks.
+    chunk_overlap = 200 
+
+    Settings.embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-large-en")
+    Settings.node_parser = SentenceSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+    
+    console.print(f"  [dim]‣ Chunk Size:[/dim] [cyan]{chunk_size} tokens[/cyan]")
+    console.print(f"  [dim]‣ Chunk Overlap:[/dim] [cyan]{chunk_overlap} tokens[/cyan]")
+    console.print(f"  [dim]‣ Embedding Model:[/dim] [cyan]BAAI/bge-large-en[/cyan]")
 
     # 6) Persistent Chroma client
     console.print(f"💾 Initializing ChromaDB at {PERSIST_DIR}...")
@@ -305,13 +324,13 @@ def main():
         index = VectorStoreIndex.from_documents(
             docs_to_index,
             storage_context=storage_context,
-            embed_model=embed_model,
+            # embed_model and node_parser are sourced from global Settings
         )
         console.print(f"✅ Indexed {len(docs_to_index)} new/modified documents.")
     else:
         index = VectorStoreIndex.from_vector_store(
             vector_store=vector_store,
-            embed_model=embed_model,
+            # embed_model is sourced from global Settings
         )
         console.print("✅ Existing documents available in the index.")
 
