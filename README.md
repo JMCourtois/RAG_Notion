@@ -1,6 +1,52 @@
-# RAG Notion Project
+# 🐳DeepSeek RAG Notion
 
-A simple project to ingest Notion pages into a ChromaDB vector store for RAG pipelines.
+> **Note:** This project is configured to use the **DeepSeek API**, which offers significant cost savings through "cache hits" and off-peak discounts. Understanding these concepts is key to using the chat efficiently.
+
+## 🚀 Cost Optimization with the DeepSeek API
+
+The chat script (`scripts/query_chroma.py`) is designed to be economical by leveraging DeepSeek's pricing model.
+
+### Pricing Structure and "Cache Hits"
+
+DeepSeek has a unique pricing model where the cost of **input tokens** is drastically reduced if they have already been sent in the same conversation. This is called a "cache hit."
+
+-   **Cache Hit:** A token that was part of a previous message in the history.
+-   **Cache Miss:** A new token that has not been seen before.
+
+This script maximizes cache hits by resending the conversation history with each new message. This way, only your new question is charged at the higher "cache miss" rate, while the previous context is nearly free.
+
+| MODEL | `deepseek-chat` | `deepseek-reasoner` |
+| :--- | :--- | :--- |
+| **INPUT (CACHE HIT)** | $0.07 / 1M tokens | $0.14 / 1M tokens |
+| **INPUT (CACHE MISS)**| $0.27 / 1M tokens | $0.55 / 1M tokens |
+| **OUTPUT** | $1.10 / 1M tokens | $2.19 / 1M tokens |
+
+*Prices are significantly lower than other major APIs. Verified: May 2024.*
+
+### Context Window
+
+To prevent costs from growing indefinitely in long conversations, the chat uses a **context window** (`ChatMemoryBuffer`) with a token limit. When the conversation history exceeds this limit, the oldest messages are removed. This ensures that the cost per query reaches a predictable maximum instead of increasing forever.
+
+### 💰 Off-Peak Discounts (Up to 75%!)
+
+DeepSeek offers substantial discounts during its off-peak hours.
+
+-   **Discount Time Slot:** **16:30 to 00:30 UTC**
+-   **Discount:**
+    -   **50% off** for `deepseek-chat`
+    -   **75% off** for `deepseek-reasoner`
+
+#### Time Zone Examples:
+
+-   **🇪🇸 🇩🇪 Spain/Germany (CET, Winter):** 17:30 to 01:30
+-   **🇪🇸 🇩🇪 Spain/Germany (CEST, Summer):** 18:30 to 02:30
+
+> *(Note: Summer time in Europe (CEST) starts on the last Sunday of March and ends on the last Sunday of October, when it reverts to winter time (CET).)*
+
+Using the script during these hours can drastically reduce costs.
+
+---
+# Instructions
 
 ## 1. Setup
 
@@ -50,7 +96,7 @@ You can modify the script's behavior with 자랑:
 -   `--notion-page-id YOUR_PAGE_ID`  
     Temporarily use a different root Notion page without changing the `.env` file.
     ```bash
-    python3 scripts/notion_to_chroma.py --notion-page-id <ID_DE_PAGINA>
+    python3 scripts/notion_to_chroma.py --notion-page-id <PAGE_ID>
     ```
 
 -   `--persist-dir path/to/db`  
@@ -114,6 +160,94 @@ Inside the chat, you can type your questions. Use `exit` or `quit` to end the se
 # 🐳 RAG Notion Tutorial (DeepSeek)
 
 Let's build your project using **NotionPageReader + LlamaIndex + BAAI (Hugging Face) embeddings + Chroma + DeepSeek**.
+
+## **🏗️ Architecture Overview**
+
+```
+┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
+│   Notion    │───▶│  LlamaIndex │───▶│  ChromaDB   │───▶│  DeepSeek   │
+│   Pages     │    │  Reader     │    │  Vector DB  │    │    LLM      │
+└─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘
+                          │                    │                    │
+                          ▼                    ▼                    ▼
+                   ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
+                   │ BGE-Large   │    │  Semantic   │    │  Context-   │
+                   │ Embeddings  │    │  Search     │    │  Aware      │
+                   └─────────────┘    └─────────────┘    └─────────────┘
+
+```
+
+### **Why This Architecture?**
+
+1. **Notion as Data Source**: Rich, structured content with metadata
+2. **LlamaIndex for Orchestration**: Handles document loading, chunking, and embedding
+3. **ChromaDB for Vector Storage**: Persistent, scalable vector database
+4. **BGE-Large Embeddings**: High-quality semantic representations
+5. **DeepSeek LLM**: Powerful reasoning with context awareness
+
+## **🔧 Components Explained**
+
+### **1. Document Ingestion Pipeline**
+
+### **Why Notion?**
+
+- **Rich Content**: Supports text, tables, lists, and structured data
+- **Metadata**: Page titles, URLs, last edited times
+- **API Access**: Programmatic access to content
+- **Version Control**: Track changes over time
+
+### **Why LlamaIndex?**
+
+- **Document Processing**: Handles chunking, metadata extraction
+- **Embedding Integration**: Seamless integration with embedding models
+- **Vector Store Abstraction**: Works with multiple vector databases
+- **RAG Orchestration**: Manages the entire retrieval pipeline
+
+### **2. Vector Database (ChromaDB)**
+
+### **Why ChromaDB?**
+
+- **Persistence**: Data survives restarts
+- **Performance**: Fast similarity search
+- **Metadata Support**: Store additional information with vectors
+- **Scalability**: Handles large document collections
+
+### **How It Works:**
+
+1. **Document Chunking**: Breaks documents into smaller pieces
+2. **Embedding Generation**: Converts text to numerical vectors
+3. **Vector Storage**: Stores embeddings with metadata
+4. **Similarity Search**: Finds relevant chunks for queries
+
+### **3. Embedding Model (BGE-Large)**
+
+### **Why BGE-Large?**
+
+- **Multilingual**: Works with multiple languages
+- **High Quality**: State-of-the-art semantic understanding
+- **Efficient**: Fast inference for real-time queries
+- **Open Source**: No API costs or rate limits
+
+### **How Embeddings Work:**
+
+```python
+# Text → Vector (numerical representation)
+"magic systems" → [0.123, -0.456, 0.789, ...]  # 1024 dimensions
+"spell casting" → [0.124, -0.455, 0.788, ...]  # Similar vectors
+"cooking recipe" → [-0.987, 0.654, -0.321, ...] # Different vectors
+
+```
+
+### **4. Language Model (DeepSeek)**
+
+### **Why DeepSeek?**
+
+- **Reasoning Capabilities**: Excellent at understanding context
+- **Code Understanding**: Good for technical content
+- **Cost Effective**: Competitive pricing
+- **API Compatibility**: Works with OpenAI SDK
+
+---
 
 ## 1. Folder Structure and Working Environment
 
