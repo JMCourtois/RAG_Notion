@@ -238,6 +238,23 @@ Let's build your project using **NotionPageReader + LlamaIndex + BAAI (Hugging F
 
 ```
 
+### Understanding Data Chunking
+
+In a Retrieval-Augmented Generation (RAG) system, **chunking** is the process of breaking down large documents into smaller, manageable pieces of text called "chunks". This step is crucial for the performance and accuracy of the system.
+
+**Why is it important?**
+
+1.  **Relevance**: When you ask a question, the system searches for the most relevant chunks to build the answer. Smaller, more focused chunks lead to more precise search results and prevent the model from getting distracted by irrelevant information within a large document.
+2.  **Performance**: It's much faster to search through and process small chunks than entire documents.
+3.  **Context Fit**: The selected chunks must fit into the context window of the Language Model (like DeepSeek). Proper chunking ensures that we send the most relevant information without exceeding this limit.
+
+This project uses a `SentenceSplitter` with the following default configuration, which strikes a good balance between context and precision:
+
+-   **Chunk Size**: **1024 tokens**. This defines the maximum size of each text chunk.
+-   **Chunk Overlap**: **200 tokens**. This creates an overlap between consecutive chunks, ensuring that a sentence or idea isn't awkwardly split in half, which helps maintain context across chunks.
+
+You can easily experiment with these values in the `scripts/notion_to_chroma.py` script to see how they affect the quality of the answers.
+
 ### **4. Language Model (DeepSeek)**
 
 ### **Why DeepSeek?**
