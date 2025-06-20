@@ -145,6 +145,16 @@ def print_source_nodes_compressed(source_nodes):
     rprint("[bold]------------------------[/bold]\n")
 
 
+# --- DeepSeek API Cost Note ---
+# DeepSeek offers significant off-peak pricing discounts.
+# - Off-peak hours: 16:30 - 00:30 UTC.
+#   - Germany/Spain (Winter, CET): 17:30 to 01:30. (UTC+1)
+#   - Germany/Spain (Summer, CEST): 18:30 to 02:30. (UTC+2)
+# - Discount Rates:
+#   - deepseek-chat: 50% off (input & output).
+#   - deepseek-reasoner: 75% off (input & output).
+# Running this script during these hours can significantly reduce costs.
+
 def main():
     """Main function to run the interactive RAG chat."""
     parser = argparse.ArgumentParser(description="Interactive RAG chat with DeepSeek.")
@@ -199,8 +209,21 @@ def main():
     )
 
     # 5. Create chat engine with memory and system prompt
-    memory = ChatMemoryBuffer.from_defaults(token_limit=4000)
+    # The ChatMemoryBuffer provides the conversational history. It operates as a
+    # sliding window, pruning the oldest messages once the token_limit is reached.
+    # This is the key mechanism to prevent unbounded context growth and keep API costs predictable.
+    #
+    # Estimated max cost multiplier vs. the first prompt (based on top_k=5, chunk_size=512):
+    # - token_limit=4000:  ~1.35x
+    # - token_limit=8000:  ~1.75x
+    # - token_limit=16000: ~2.5x
+    # - token_limit=30000: ~3.8x
+    memory = ChatMemoryBuffer.from_defaults(token_limit=10000)
     
+    # We create a single, stateful chat_engine. This engine leverages the memory buffer
+    # to send the recent conversation history with each new query. DeepSeek's API
+    # recognizes this repeated history as a "cache hit," processing it at a
+    # significantly lower cost and speed. This is the most cost-efficient way to operate.
     chat_engine = index.as_chat_engine(
         chat_mode="context",  # type: ignore
         llm=llm,
@@ -224,19 +247,20 @@ def main():
                     rprint("\n👋 [bold]Goodbye![/bold]")
                     break
                 
-                if args.sources_debug or args.sources:
-                    # To show sources first, we query non-streamed to get nodes, then stream for chat.
-                    # This is slightly less efficient as it retrieves twice, but ensures correct order.
-                    query_engine = index.as_query_engine(llm=llm, similarity_top_k=args.top_k)
-                    response_for_sources = query_engine.query(user_input)
-                    
-                    if args.sources_debug:
-                        print_source_nodes_debug(response_for_sources.source_nodes)
-                    elif args.sources:
-                        print_source_nodes_compressed(response_for_sources.source_nodes)
-
+                # This is the main interaction loop, making a single, stateful call per query.
                 response_stream = chat_engine.stream_chat(user_input)
                 print_streaming_response(response_stream)
+                
+                # Source documents are displayed *after* the stream is complete.
+                # This ensures we use a single API call, which is essential for caching.
+                # Attempting to show sources first would require a separate, preliminary API call,
+                # breaking the conversational cache chain and increasing costs.
+                if args.sources_debug:
+                    if hasattr(response_stream, 'source_nodes'):
+                        print_source_nodes_debug(response_stream.source_nodes)
+                elif args.sources:
+                    if hasattr(response_stream, 'source_nodes'):
+                        print_source_nodes_compressed(response_stream.source_nodes)
 
             except KeyboardInterrupt:
                 rprint("\n👋 [bold]Goodbye![/bold]")
