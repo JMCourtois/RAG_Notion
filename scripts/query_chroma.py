@@ -24,6 +24,11 @@ from llama_index.core.memory import ChatMemoryBuffer
 # --- ChromaDB Imports ---
 import chromadb
 
+# --- Rich Print ---
+from rich import print as rprint
+from rich.panel import Panel
+from rich.text import Text
+
 # Load environment variables
 load_dotenv()
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
@@ -84,13 +89,13 @@ def print_streaming_response(response_gen):
     return full_response
 
 
-def print_source_nodes(source_nodes):
-    """Prints the source nodes and their metadata."""
+def print_source_nodes_debug(source_nodes):
+    """Prints the source nodes and their full metadata for debugging."""
     if not source_nodes:
         print("\n[No source documents found for this query.]\n")
         return
 
-    print("\n--- Source Documents ---")
+    print("\n--- Source Documents (Debug) ---")
     for i, source_node in enumerate(source_nodes):
         print(f"📄 Source {i+1} (Score: {source_node.score:.4f})")
         if source_node.node.metadata:
@@ -101,29 +106,67 @@ def print_source_nodes(source_nodes):
         content = source_node.node.get_content().strip().replace('\n', ' ')
         print(f"   Snippet: '{content[:150]}...'")
         print("-" * 25)
-    print("------------------------\n")
+    print("--------------------------------\n")
+
+
+def print_source_nodes_compressed(source_nodes):
+    """Prints the source nodes in a compressed, visual format using Rich."""
+    if not source_nodes:
+        rprint("\n[bold red][No source documents found for this query.][/bold red]\n")
+        return
+
+    rprint("\n[bold]--- Source Documents ---[/bold]")
+    for i, source_node in enumerate(source_nodes):
+        page_id = source_node.node.metadata.get("page_id", "N/A")
+        title = source_node.node.metadata.get("title", "No Title")
+        score = source_node.score
+        
+        pid_suffix = page_id[-3:] if page_id != "N/A" else "N/A"
+        
+        header = Text()
+        header.append(f"{i+1}º ", style="bold white")
+        header.append(f"(Sc: {score:.2f})", style="cyan")
+        header.append(" - pID: ", style="white")
+        header.append(f"{pid_suffix}", style="yellow")
+        header.append(f" - {title}", style="bold magenta")
+
+        content = source_node.node.get_content().strip().replace('\n', ' ')
+        snippet = f"'{content[:120]}...'"
+
+        rprint(Panel(
+            Text.from_markup(f"[bright_black]{snippet}[/bright_black]"),
+            title=header,
+            border_style="dim",
+            expand=False
+        ))
+    rprint("[bold]------------------------[/bold]\n")
 
 
 def main():
     """Main function to run the interactive RAG chat."""
     parser = argparse.ArgumentParser(description="Interactive RAG chat with DeepSeek.")
-    parser.add_argument("--top-k", type=int, default=9, help="Number of top similar documents to retrieve.")
+    parser.add_argument("--top-k", type=int, default=5, help="Number of top similar documents to retrieve.")
     parser.add_argument("--model", default="deepseek-chat", help="DeepSeek model to use (e.g., deepseek-chat, deepseek-coder).")
     parser.add_argument("--persist-dir", default=CHROMA_PERSIST_DIR, help="Directory for ChromaDB persistence.")
     parser.add_argument(
-        "--show-sources",
+        "--sources-debug",
         action="store_true",
-        help="Show source documents and metadata for the query.",
+        help="Show full source documents and all metadata for debugging.",
+    )
+    parser.add_argument(
+        "--sources",
+        action="store_true",
+        help="Show compressed source documents and metadata for the query.",
     )
     args = parser.parse_args()
 
     if not DEEPSEEK_API_KEY:
         raise ValueError("❌ DEEPSEEK_API_KEY not found in .env file. Please add it.")
 
-    print(f"🚀 Starting RAG chat with model: {args.model}")
-    print(f"💾 Using ChromaDB from: {args.persist_dir}")
-    print(f"🔍 Retrieving top {args.top_k} documents for context.")
-    print(f"🤖 System Prompt: '{SYSTEM_PROMPT[:80]}...'") # Print first 80 chars of the prompt
+    rprint(f"🚀 Starting RAG chat with model: [bold cyan]{args.model}[/bold cyan]")
+    rprint(f"💾 Using ChromaDB from: [bold yellow]{args.persist_dir}[/bold yellow]")
+    rprint(f"🔍 Retrieving top [bold green]{args.top_k}[/bold green] documents for context.")
+    rprint(f"🤖 System Prompt: '[italic]{SYSTEM_PROMPT[:180]}...[/italic]'")
 
     # 1. Initialize LLM
     llm = DeepseekOpenAI(
@@ -165,8 +208,8 @@ def main():
         verbose=False,
     )
 
-    print("-" * 50)
-    print("💬 Ask questions about your Notion documents. Type 'exit' or 'quit' to end.")
+    rprint("[grey50]" + "-" * 50 + "[/grey50]")
+    rprint("💬 [bold]Ask questions about your Notion documents.[/bold] Type '[bold red]exit[/bold red]' or '[bold red]quit[/bold red]' to end.")
 
     try:
         while True:
@@ -175,27 +218,31 @@ def main():
                 if not user_input:
                     continue
                 if user_input.lower() in ['exit', 'quit', 'bye']:
-                    print("👋 Goodbye!")
+                    rprint("\n👋 [bold]Goodbye![/bold]")
                     break
                 
-                if args.show_sources:
+                if args.sources_debug or args.sources:
                     # To show sources first, we query non-streamed to get nodes, then stream for chat.
                     # This is slightly less efficient as it retrieves twice, but ensures correct order.
                     query_engine = index.as_query_engine(llm=llm, similarity_top_k=args.top_k)
                     response_for_sources = query_engine.query(user_input)
-                    print_source_nodes(response_for_sources.source_nodes)
+                    
+                    if args.sources_debug:
+                        print_source_nodes_debug(response_for_sources.source_nodes)
+                    elif args.sources:
+                        print_source_nodes_compressed(response_for_sources.source_nodes)
 
                 response_stream = chat_engine.stream_chat(user_input)
                 print_streaming_response(response_stream)
 
             except KeyboardInterrupt:
-                print("\n👋 Goodbye!")
+                rprint("\n👋 [bold]Goodbye![/bold]")
                 break
             except EOFError:
-                print("\n👋 Goodbye!")
+                rprint("\n👋 [bold]Goodbye![/bold]")
                 break
     except Exception as e:
-        print(f"\n❌ An unexpected error occurred: {e}")
+        rprint(f"\n❌ [bold red]An unexpected error occurred:[/bold red] {e}")
 
 if __name__ == "__main__":
     main() 
