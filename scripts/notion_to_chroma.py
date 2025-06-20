@@ -7,9 +7,25 @@ import os
 import json
 import argparse
 import shutil
+import time
+
 from dotenv import load_dotenv
 from notion_client import Client as NotionClient
 import chromadb
+
+# --- Rich UI Imports ---
+from rich.console import Console
+from rich.panel import Panel
+from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn
+from rich.table import Table
+
+# --- LlamaIndex Imports ---
+from llama_index.readers.notion import NotionPageReader
+from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+from chromadb import PersistentClient
+from chromadb.config import Settings as ChromaSettings, DEFAULT_TENANT, DEFAULT_DATABASE
+from llama_index.vector_stores.chroma import ChromaVectorStore
+from llama_index.core import VectorStoreIndex, StorageContext
 
 # Load environment variables
 load_dotenv()
@@ -41,6 +57,7 @@ if NOTION_PAGE_ID is None:
     raise ValueError("❌ Missing NOTION_PAGE_ID in .env or --notion-page-id argument")
 
 notion = NotionClient(auth=NOTION_TOKEN)
+console = Console() # Rich console for better UI
 
 from llama_index.readers.notion import NotionPageReader
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
@@ -56,7 +73,7 @@ def load_history(history_path):
     except FileNotFoundError:
         return {}
     except json.JSONDecodeError:
-        print(f"⚠️ The history file {history_path} is empty or corrupted. It will be reset.")
+        console.print(f"⚠️ The history file {history_path} is empty or corrupted. It will be reset.")
         return {}
 
 def save_history(history, history_path):
@@ -81,7 +98,7 @@ def _discover_child_pages_recursive(block_id: str, discovered_pages: set):
         next_cursor = None
         while True:
             response = notion.blocks.children.list(block_id=block_id, start_cursor=next_cursor, page_size=100)
-            blocks = response.get("results", [])
+            blocks = response.get("results", []) # type: ignore
             for block in blocks:
                 # If it's a child page, add it and recurse into it.
                 if block.get("type") == "child_page":
@@ -93,18 +110,18 @@ def _discover_child_pages_recursive(block_id: str, discovered_pages: set):
                 elif block.get("has_children"):
                     _discover_child_pages_recursive(block.get("id"), discovered_pages)
             
-            next_cursor = response.get("next_cursor")
+            next_cursor = response.get("next_cursor") # type: ignore
             if not next_cursor:
                 break
     except Exception as e:
-        print(f"⚠️ Error exploring children of block {block_id}: {e}")
+        console.print(f"  [red]⚠️ Error exploring children of block {block_id}: {e}[/red]")
 
 def sync_deleted_pages(chroma_collection, history: dict, notion_page_ids: set):
     """
     Removes documents from ChromaDB and history if their source page no longer exists in Notion.
     This function performs a full audit of the database.
     """
-    print("🔄 Syncing deleted pages...")
+    console.print("🔄 [bold]Syncing deleted pages...[/bold]")
     
     # 1. Get ALL documents from ChromaDB to perform a full audit.
     try:
@@ -112,7 +129,7 @@ def sync_deleted_pages(chroma_collection, history: dict, notion_page_ids: set):
         all_doc_ids = all_chroma_docs.get('ids', [])
         all_metadatas = all_chroma_docs.get('metadatas', [])
     except Exception as e:
-        print(f"⚠️ Could not get documents from ChromaDB to sync deletes: {e}")
+        console.print(f"⚠️ Could not get documents from ChromaDB to sync deletes: {e}")
         return
 
     # 2. Identify document chunks whose page_id is no longer in Notion
@@ -127,24 +144,24 @@ def sync_deleted_pages(chroma_collection, history: dict, notion_page_ids: set):
 
     # 3. Delete the orphaned chunks from ChromaDB
     if doc_ids_to_delete:
-        print(f"🗑️ Found {len(doc_ids_to_delete)} orphaned document chunks to delete...")
+        console.print(f"🗑️ Found {len(doc_ids_to_delete)} orphaned document chunks to delete...")
         try:
             chroma_collection.delete(ids=doc_ids_to_delete)
-            print("✅ Successfully deleted orphaned chunks from ChromaDB.")
+            console.print("✅ Successfully deleted orphaned chunks from ChromaDB.")
         except Exception as e:
-            print(f"❌ Error deleting chunks from ChromaDB: {e}")
+            console.print(f"❌ Error deleting chunks from ChromaDB: {e}")
     else:
-        print("✅ No orphaned document chunks found in ChromaDB.")
+        console.print("✅ No orphaned document chunks found in ChromaDB.")
 
     # 4. Clean up the history file based on what's no longer in Notion
     history_page_ids_to_delete = set(history.keys()) - notion_page_ids
     if history_page_ids_to_delete:
-        print(f"🗑️ Found {len(history_page_ids_to_delete)} page(s) to remove from history...")
+        console.print(f"🗑️ Found {len(history_page_ids_to_delete)} page(s) to remove from history...")
         for page_id in history_page_ids_to_delete:
             del history[page_id]
-        print("✅ Successfully removed pages from history.")
+        console.print("✅ Successfully removed pages from history.")
     else:
-        print("✅ History file is already up to date.")
+        console.print("✅ History file is already up to date.")
 
 def enrich_document_metadata(doc, notion_client):
     pid = doc.metadata.get("page_id")
@@ -153,7 +170,7 @@ def enrich_document_metadata(doc, notion_client):
     try:
         page_info = notion_client.pages.retrieve(page_id=pid)
     except Exception as e:
-        print(f"⚠️ Error retrieving metadata for {pid}: {e}")
+        console.print(f"⚠️ Error retrieving metadata for {pid}: {e}")
         return doc
     title = None
     props = page_info.get("properties", {})
@@ -173,42 +190,45 @@ def enrich_document_metadata(doc, notion_client):
     return doc
 
 def main():
+    start_time = time.monotonic()
+    console.print(Panel("[bold green]🚀 Notion to ChromaDB Indexer 🚀[/bold green]", expand=False))
+    
     if args.reset_chroma:
-        print("🔥 --reset-chroma flag detected. Deleting database and history.")
+        console.print("🔥 --reset-chroma flag detected. Deleting database and history.")
         if os.path.exists(PERSIST_DIR):
             try:
                 shutil.rmtree(PERSIST_DIR)
-                print(f"✅ Deleted ChromaDB directory: {PERSIST_DIR}")
+                console.print(f"✅ Deleted ChromaDB directory: {PERSIST_DIR}")
             except OSError as e:
-                print(f"❌ Error deleting directory {PERSIST_DIR}: {e}")
+                console.print(f"❌ Error deleting directory {PERSIST_DIR}: {e}")
         else:
-            print(f"🤷 Directory {PERSIST_DIR} not found, nothing to delete.")
+            console.print(f"🤷 Directory {PERSIST_DIR} not found, nothing to delete.")
         
         history_dir = os.path.dirname(HISTORY_PATH)
         if os.path.exists(history_dir):
             try:
                 shutil.rmtree(history_dir)
-                print(f"✅ Deleted history directory: {history_dir}")
+                console.print(f"✅ Deleted history directory: {history_dir}")
             except OSError as e:
-                print(f"❌ Error deleting directory {history_dir}: {e}")
+                console.print(f"❌ Error deleting directory {history_dir}: {e}")
         else:
-            print(f"🤷 Directory {history_dir} not found, nothing to delete.")
+            console.print(f"🤷 Directory {history_dir} not found, nothing to delete.")
 
-        print("✅ Reset complete. Proceeding with fresh indexing...")
+        console.print("✅ Reset complete. Proceeding with fresh indexing...")
 
-    print(f"🔗 Notion page ID: {NOTION_PAGE_ID}")
-    print(f"💾 ChromaDB dir: {PERSIST_DIR}")
-    print(f"📝 History: {HISTORY_PATH}")
+    console.print(f"🔗 Notion page ID: {NOTION_PAGE_ID}")
+    console.print(f"💾 ChromaDB dir: {PERSIST_DIR}")
+    console.print(f"📝 History: {HISTORY_PATH}")
     if FORCE_REINDEX:
-        print("🔄 Forced reindexing enabled")
+        console.print("🔄 Forced reindexing enabled")
 
     history = load_history(HISTORY_PATH)
 
     # 1) Discover all pages and subpages
-    print("🔍 Discovering pages and subpages...")
-    all_page_ids = {NOTION_PAGE_ID}
-    _discover_child_pages_recursive(NOTION_PAGE_ID, all_page_ids)
-    print(f"📄 Found {len(all_page_ids)} pages (including subpages)")
+    with console.status("[bold green]🔍 Discovering pages and subpages...") as status:
+        all_page_ids = {NOTION_PAGE_ID}
+        _discover_child_pages_recursive(NOTION_PAGE_ID, all_page_ids)
+    console.print(f"📄 [bold]Found {len(all_page_ids)} pages (including subpages)[/bold]")
 
     # Connect to ChromaDB and load history before syncing
     chroma_client = chromadb.PersistentClient(path=PERSIST_DIR)
@@ -219,20 +239,27 @@ def main():
     
     # 3) Read Notion documents for the remaining pages
     reader = NotionPageReader(integration_token=NOTION_TOKEN)
-    print("📖 Reading Notion pages...")
+    console.print("📖 [bold]Reading Notion pages...[/bold]")
     docs = reader.load_data(page_ids=list(all_page_ids))
-    print(f"✅ Loaded {len(docs)} Notion documents.")
+    console.print(f"✅ Loaded {len(docs)} Notion documents.")
 
-    # 4) Enrich metadata
-    enriched_docs = [enrich_document_metadata(doc, notion) for doc in docs]
-    print(f"✅ Enriched metadata for {len(enriched_docs)} documents.")
+    # 4) Enrich metadata with a progress bar
+    console.print("🧠 [bold]Enriching documents with metadata...[/bold]")
+    enriched_docs = []
+    with Progress(SpinnerColumn(), BarColumn(), "[progress.percentage]{task.percentage:>3.0f}%", TextColumn("{task.description}")) as progress:
+        task = progress.add_task("[cyan]Enriching...", total=len(docs))
+        for doc in docs:
+            enriched_docs.append(enrich_document_metadata(doc, notion))
+            progress.update(task, advance=1)
+    
+    console.print(f"✅ Enriched metadata for {len(enriched_docs)} documents.")
 
     # 5) Embedding model
-    print("🔄 Loading embedding model BAAI/bge-large-en...")
+    console.print("🔄 [bold]Loading embedding model BAAI/bge-large-en...[/bold]")
     embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-large-en")
 
     # 6) Persistent Chroma client
-    print(f"💾 Initializing ChromaDB at {PERSIST_DIR}...")
+    console.print(f"💾 Initializing ChromaDB at {PERSIST_DIR}...")
     chroma_client = PersistentClient(
         path=PERSIST_DIR,
         settings=ChromaSettings(),
@@ -244,52 +271,53 @@ def main():
     # Check if the database is empty, which should trigger a re-index.
     is_db_empty = chroma_collection.count() == 0
     if is_db_empty:
-        print("⚠️ ChromaDB is empty. Forcing a re-index of all documents.")
+        console.print("⚠️ ChromaDB is empty. Forcing a re-index of all documents.")
 
     # 7) Filter docs to index
     if FORCE_REINDEX or is_db_empty:
         docs_to_index = enriched_docs
         if FORCE_REINDEX:
-            print(f"🔄 Reindexing {len(docs_to_index)} documents (forced by flag)")
+            console.print(f"🔄 Reindexing {len(docs_to_index)} documents (forced by flag)")
         else:
-            print(f"🔄 Reindexing {len(docs_to_index)} documents (database was empty)")
+            console.print(f"🔄 Reindexing {len(docs_to_index)} documents (database was empty)")
     else:
         docs_to_index = [doc for doc in enriched_docs if should_reindex(doc, history)]
-        print(f"🆕 Documents to index based on last edit time: {len(docs_to_index)}")
+        console.print(f"🆕 Documents to index based on last edit time: {len(docs_to_index)}")
 
     # 8) Cleanly update the index by first deleting old chunks
     if not is_db_empty and docs_to_index:
         page_ids_to_update = {doc.metadata['page_id'] for doc in docs_to_index}
-        print(f"🔄 Preparing to update {len(page_ids_to_update)} page(s) by deleting their old chunks first...")
-        delete_filter = {"page_id": {"$in": list(page_ids_to_update)}}
+        console.print(f"🔄 Preparing to update {len(page_ids_to_update)} page(s) by deleting their old chunks first...")
+        # Ensure the list of page IDs are strings for the filter
+        delete_filter = {"page_id": {"$in": [str(pid) for pid in page_ids_to_update]}}
         try:
-            chroma_collection.delete(where=delete_filter)
-            print("✅ Successfully deleted old chunks for pages to be updated.")
+            chroma_collection.delete(where=delete_filter) # type: ignore
+            console.print("✅ Successfully deleted old chunks for pages to be updated.")
         except Exception as e:
-            print(f"❌ Error deleting old chunks during update: {e}")
+            console.print(f"❌ Error deleting old chunks during update: {e}")
 
     # 9) Index or ensure the index
     vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
     storage_context = StorageContext.from_defaults(vector_store=vector_store)
 
-    print("📚 Creating/updating index in ChromaDB...")
+    console.print("📚 Creating/updating index in ChromaDB...")
     if docs_to_index:
         index = VectorStoreIndex.from_documents(
             docs_to_index,
             storage_context=storage_context,
             embed_model=embed_model,
         )
-        print(f"✅ Indexed {len(docs_to_index)} new/modified documents.")
+        console.print(f"✅ Indexed {len(docs_to_index)} new/modified documents.")
     else:
         index = VectorStoreIndex.from_vector_store(
             vector_store=vector_store,
             embed_model=embed_model,
         )
-        print("✅ Existing documents available in the index.")
+        console.print("✅ Existing documents available in the index.")
 
     # 10) Persist changes
     index.storage_context.persist()
-    print("✅ Index saved to ChromaDB.")
+    console.print("✅ Index saved to ChromaDB.")
 
     # 11) Update history
     for doc in docs_to_index:
@@ -299,13 +327,28 @@ def main():
             history[pid] = last_edit
     if docs_to_index:
         save_history(history, HISTORY_PATH)
-        print(f"📝 History updated ({len(docs_to_index)} pages indexed).")
+        console.print(f"✅ History updated ({len(docs_to_index)} pages indexed).")
     else:
-        print("📝 No new pages to update in history.")
+        console.print("📝 No new pages to update in history.")
 
     # 12) Check documents in ChromaDB
     count = chroma_collection.count()
-    print(f"📊 Total documents in ChromaDB: {count}")
+    console.print(f"📊 Total documents in ChromaDB: {count}")
+
+    # 12) Final Summary Table
+    end_time = time.monotonic()
+    total_time = end_time - start_time
+    
+    summary_table = Table(title="Indexing Complete! 🎉", show_header=True, header_style="bold magenta")
+    summary_table.add_column("Metric", style="dim", width=25)
+    summary_table.add_column("Value", style="bold")
+    
+    summary_table.add_row("Pages Found", str(len(all_page_ids)))
+    summary_table.add_row("Docs Indexed/Updated", str(len(docs_to_index)))
+    summary_table.add_row("Total Docs in DB", str(chroma_collection.count()))
+    summary_table.add_row("Total Time", f"{total_time:.2f} seconds")
+    
+    console.print(summary_table)
 
 if __name__ == "__main__":
     main()
