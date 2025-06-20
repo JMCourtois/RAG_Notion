@@ -125,16 +125,19 @@ def print_source_nodes_compressed(source_nodes):
         
         header = Text()
         header.append(f"{i+1}º ", style="bold white")
-        header.append(f"(Sc: {score:.2f})", style="cyan")
+        header.append(f"{score:.2f}", style="cyan")
         header.append(" - pID: ", style="white")
         header.append(f"{pid_suffix}", style="yellow")
         header.append(f" - {title}", style="bold magenta")
 
         content = source_node.node.get_content().strip().replace('\n', ' ')
-        snippet = f"'{content[:120]}...'"
+        snippet = f"'{content[:180]}...'"
+
+        text_content = Text.from_markup(f"[bright_black]{snippet}[/bright_black]")
+        text_content.no_wrap = True
 
         rprint(Panel(
-            Text.from_markup(f"[bright_black]{snippet}[/bright_black]"),
+            text_content,
             title=header,
             border_style="dim",
             expand=False
